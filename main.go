@@ -15,6 +15,7 @@ import (
 )
 
 type SpeedTestResult struct {
+	Type      string    `json:"type"`
 	Timestamp time.Time `json:"timestamp"`
 	Ping      struct {
 		Latency float64 `json:"latency"`
@@ -44,9 +45,7 @@ func (f *FormattedSpeedTest) toCSV() []string {
 }
 
 func ensureCSVFile(filename string) (*os.File, error) {
-	// Check if file exists
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		// Create file and write header
 		file, err := os.Create(filename)
 		if err != nil {
 			return nil, fmt.Errorf("error creating CSV file: %w", err)
@@ -64,50 +63,52 @@ func ensureCSVFile(filename string) (*os.File, error) {
 		}
 		return file, nil
 	}
-
-	// Open existing file in append mode
 	return os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
 }
 
+func parseSpeedTestOutput(output []byte) (*FormattedSpeedTest, error) {
+	lines := strings.Split(string(output), "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Try to parse each line as a JSON object
+		var result SpeedTestResult
+		if err := json.Unmarshal([]byte(line), &result); err != nil {
+			continue
+		}
+
+		// Only process "result" type entries
+		if result.Type != "result" {
+			continue
+		}
+
+		// Convert bandwidth from bytes/s to Mbps
+		downloadMbps := float64(result.Download.Bandwidth) * 8 / 1_000_000
+		uploadMbps := float64(result.Upload.Bandwidth) * 8 / 1_000_000
+
+		return &FormattedSpeedTest{
+			Timestamp:    result.Timestamp.Format(time.RFC3339),
+			PingMs:       result.Ping.Latency,
+			DownloadMbps: downloadMbps,
+			UploadMbps:   uploadMbps,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no valid speed test result found in output")
+}
+
 func runSpeedTest() (*FormattedSpeedTest, error) {
-	// Create command with combined output
-	speedtest := exec.Command("speedtest", "--progress=no", "--format=json-pretty")
-	output, err := speedtest.CombinedOutput() // Get both stdout and stderr
-
-	// Check for common error patterns in the output
-	outputStr := string(output)
+	speedtest := exec.Command("speedtest", "--progress=no", "--format=json")
+	output, err := speedtest.CombinedOutput()
 	if err != nil {
-		if strings.Contains(outputStr, "offline") {
-			return nil, fmt.Errorf("network appears to be offline: %s", outputStr)
-		}
-		if strings.Contains(outputStr, "Configuration") {
-			return nil, fmt.Errorf("speedtest configuration error: %s", outputStr)
-		}
-		return nil, fmt.Errorf("speedtest error: %v\nOutput: %s", err, outputStr)
+		return nil, fmt.Errorf("error running speedtest: %w\nOutput: %s", err, string(output))
 	}
 
-	var result SpeedTestResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("error parsing JSON: %w\nOutput: %s", err, outputStr)
-	}
-
-	// Validate the results
-	if result.Download.Bandwidth == 0 || result.Upload.Bandwidth == 0 {
-		return nil, fmt.Errorf("invalid speed test results - zero bandwidth detected\nOutput: %s", outputStr)
-	}
-
-	// Convert bandwidth from bytes/s to Mbps
-	downloadMbps := float64(result.Download.Bandwidth) * 8 / 1_000_000
-	uploadMbps := float64(result.Upload.Bandwidth) * 8 / 1_000_000
-
-	formattedResult := &FormattedSpeedTest{
-		Timestamp:    result.Timestamp.Format(time.RFC3339),
-		PingMs:       result.Ping.Latency,
-		DownloadMbps: downloadMbps,
-		UploadMbps:   uploadMbps,
-	}
-
-	return formattedResult, nil
+	return parseSpeedTestOutput(output)
 }
 
 func runSpeedTestWithRetry(maxRetries int, retryDelay time.Duration) (*FormattedSpeedTest, error) {
