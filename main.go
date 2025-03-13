@@ -147,7 +147,7 @@ func main() {
 	defer csvWriter.Flush()
 
 	// Create a ticker that triggers every 30 minutes (to avoid overloading)
-	ticker := time.NewTicker(30 * time.Minute)
+	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
 	// Set up signal handling for graceful shutdown
